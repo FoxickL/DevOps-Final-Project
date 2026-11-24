@@ -1,0 +1,88 @@
+---
+- name: Deploy DevOps Final stack on localhost
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    deploy_dir: /opt/devops-final
+  tasks:
+    - name: Check if Docker is installed
+      ansible.builtin.command: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker CLI and Compose on Alpine Ansible runner
+      ansible.builtin.command: apk add --no-cache docker-cli docker-cli-compose
+      when: docker_check.rc != 0 and ansible_os_family == 'Alpine'
+
+    - name: Install Docker packages on Debian
+      ansible.builtin.apt:
+        name: [docker.io, docker-compose-v2]
+        state: present
+        update_cache: true
+      when: docker_check.rc != 0 and ansible_os_family == 'Debian'
+
+    - name: Ensure Docker service is running on systemd hosts
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+      when: ansible_service_mgr == 'systemd'
+
+    - name: Stop when Docker is missing on unsupported operating systems
+      ansible.builtin.fail:
+        msg: Install Docker manually on this OS; automatic installation is configured for Debian-based systems.
+      when: docker_check.rc != 0 and ansible_os_family not in ['Debian', 'Alpine']
+
+    - name: Verify Docker daemon is reachable
+      ansible.builtin.command: docker info
+      changed_when: false
+
+    - name: Create deployment directory
+      ansible.builtin.file:
+        path: "{{ deploy_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy Compose definition
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/docker-compose.yml"
+        dest: "{{ deploy_dir }}/docker-compose.yml"
+        mode: "0644"
+
+    - name: Copy application Dockerfile and dependency manifests
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/{{ item }}"
+        dest: "{{ deploy_dir }}/{{ item }}"
+        mode: "0644"
+      loop:
+        - Dockerfile
+        - Dockerfile.prometheus
+        - Dockerfile.grafana
+        - package.json
+        - package-lock.json
+
+    - name: Copy application source
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/src"
+        dest: "{{ deploy_dir }}/src"
+        mode: preserve
+
+    - name: Copy Prometheus configuration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/prometheus.yml"
+        dest: "{{ deploy_dir }}/prometheus.yml"
+        mode: "0644"
+
+    - name: Copy Grafana provisioning configuration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/grafana"
+        dest: "{{ deploy_dir }}/grafana"
+        mode: preserve
+
+    - name: Start or reconcile services
+      community.docker.docker_compose_v2:
+        project_src: "{{ deploy_dir }}"
+        project_name: devops-final-project
+        state: present
